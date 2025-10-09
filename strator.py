@@ -6,7 +6,6 @@ import streamlit as st
 # ========== Interface utilisateur ==========
 st.title("📊 Générateur d'écritures analytiques - BLDD")
 
-# Fichier BLDD
 fichier_entree = st.file_uploader("📂 Importer le fichier Excel BLDD", type=["xlsx"])
 date_ecriture = st.date_input("📅 Date d'écriture")
 journal = st.text_input("📒 Journal", value="VT")
@@ -21,13 +20,13 @@ compte_com_diff = "622800010"
 compte_tva_collectee = "445710060"
 compte_tva_com = "445660"
 compte_provision = "681000000"
-compte_provision_contra = "151000000"
+compte_reprise = "781000000"
 compte_client = "411100011"
 
 # Saisie montants totaux commissions et reprise provision
 com_distribution_total = st.number_input("Montant total commissions distribution", value=1000.00, format="%.2f")
 com_diffusion_total = st.number_input("Montant total commissions diffusion", value=500.00, format="%.2f")
-provision_reprise = st.number_input("Reprise provision 6 mois", value=0.0, format="%.2f")
+provision_reprise = st.number_input("Montant reprise provision", value=0.0, format="%.2f")
 
 # Taux commissions
 taux_dist = st.number_input("Taux distribution (%)", value=12.5)/100
@@ -135,7 +134,7 @@ if fichier_entree is not None:
     # ========= Lignes globales =========
     ca_net_total = df["Facture"].sum()
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
-    tva_collectee = round((ca_net_total) * 0.055,2)
+    tva_collectee = round(ca_net_total * 0.055,2)
     tva_com = round(com_total * 0.055,2)
     provision_total = df["Provision_retour"].sum()
 
@@ -161,27 +160,15 @@ if fichier_entree is not None:
         "Crédit": 0.0
     }])], ignore_index=True)
 
-    # Contrepartie globale provisions
-    df_ecr = pd.concat([df_ecr, pd.DataFrame([{
-        "Date": date_ecriture.strftime("%d/%m/%Y"),
-        "Journal": journal,
-        "Compte": compte_provision_contra,
-        "Libelle": f"{libelle_base} - Provision retours (contrepartie)",
-        "ISBN": "",
-        "Débit": 0.0,
-        "Crédit": provision_total
-    }])], ignore_index=True)
-
-    # Reprise provision
+    # Reprise provision (781)
     if provision_reprise > 0:
         df_ecr = pd.concat([df_ecr, pd.DataFrame([
-            {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_provision_contra,
-             "Libelle": f"{libelle_base} - Reprise provision", "ISBN": "", "Débit": provision_reprise, "Crédit": 0.0},
-            {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_provision,
-             "Libelle": f"{libelle_base} - Reprise provision", "ISBN": "", "Débit": 0.0, "Crédit": provision_reprise}
+            {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_reprise,
+             "Libelle": f"{libelle_base} - Reprise provision", "ISBN": "",
+             "Débit": 0.0, "Crédit": provision_reprise}
         ])], ignore_index=True)
 
-    # Compte client global 411
+    # Compte client global 4111
     solde_client = ca_net_total - tva_collectee - com_total - tva_com - provision_total + provision_reprise
     df_ecr = pd.concat([df_ecr, pd.DataFrame([{
         "Date": date_ecriture.strftime("%d/%m/%Y"),
@@ -214,6 +201,5 @@ if fichier_entree is not None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # Aperçu
     st.subheader("👀 Aperçu des écritures générées")
     st.dataframe(df_ecr)
