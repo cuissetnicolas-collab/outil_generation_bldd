@@ -3,109 +3,185 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 
-# =====================
-# Interface utilisateur
-# =====================
-st.title("📊 Générateur d'écriture globale - BLDD")
+st.title("📊 Générateur d'écritures analytiques - BLDD (Edition Comptable)")
 
-fichier_bldd = st.file_uploader("📂 Importer le fichier BLDD", type=["xlsx"])
+# =====================
+# Import du fichier BLDD
+# =====================
+fichier_entree = st.file_uploader("📂 Importer le fichier Excel BLDD", type=["xlsx"])
 date_ecriture = st.date_input("📅 Date d'écriture")
 journal = st.text_input("📒 Journal", value="VT")
 libelle_base = st.text_input("📝 Libellé", value="VENTES BLDD")
 
-compte_ca = st.text_input("💰 Compte CA", value="70110000")
-compte_tva = st.text_input("💰 Compte TVA collectée", value="44571000")
-compte_provision = st.text_input("💰 Compte provision retours", value="41900000")
-compte_com_dist = st.text_input("💰 Compte commissions distribution", value="62280000")
-compte_com_diff = st.text_input("💰 Compte commissions diffusion", value="62280001")
+# Comptes
+compte_ca_brut = st.text_input("💰 Compte CA Brut (701)", value="70110000")
+compte_retour = st.text_input("💰 Compte Retours (709)", value="70910000")
+compte_ca_net = st.text_input("💰 Compte CA Net (701)", value="70110100")
+compte_com_dist = st.text_input("💰 Compte Commissions Distribution", value="62280000")
+compte_com_diff = st.text_input("💰 Compte Commissions Diffusion", value="62280001")
+compte_prov_retour = st.text_input("💰 Compte Provision Retours", value="41910000")
+compte_tva = st.text_input("💰 Compte TVA collectée", value="44570000")
 
-taux_tva = st.number_input("TVA (%)", value=5.5) / 100
-taux_provision = st.number_input("Provision retours (%)", value=10.0) / 100
-taux_dist = st.number_input("Distribution (%)", value=12.5) / 100
-taux_diff = st.number_input("Diffusion (%)", value=9.0) / 100
+# Taux et montants
+taux_dist = st.number_input("Taux distribution (%)", value=12.5)/100
+taux_diff = st.number_input("Taux diffusion (%)", value=9.0)/100
+taux_provision_retour = st.number_input("Provision retours (%)", value=10.0)/100
+taux_tva = st.number_input("TVA (%)", value=5.5)/100  # à ajuster selon produit
 
-if fichier_bldd is not None:
-    # ========== Lecture et nettoyage ==========
-    df = pd.read_excel(fichier_bldd, header=9, dtype={"ISBN": str})
+if fichier_entree is not None:
+    df = pd.read_excel(fichier_entree, header=9, dtype={"ISBN": str})
     df.columns = df.columns.str.strip()
-    df = df.dropna(subset=["ISBN"])
+    df = df.dropna(subset=["ISBN"]).copy()
     
-    # Nettoyage ISBN
     df["ISBN"] = df["ISBN"].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     df["ISBN"] = df["ISBN"].str.replace('-', '', regex=False).str.replace(' ', '', regex=False)
     
-    # Conversion des colonnes en numérique
-    for c in ["Ventes","Retours","Vente","Retour","Net","Facture"]:
+    for c in ["Vente", "Retour", "Net", "Facture"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
-    
-    # ========== Calculs ==========
-    # CA brut TTC pour provision
-    ca_brut_ttc = df["Vente"].sum()
-    provision_retours = ca_brut_ttc * taux_provision
-    
-    # CA HT = Net / (1 + TVA)
-    net_ht = df["Net"].sum() / (1 + taux_tva)
-    tva_collectee = df["Net"].sum() - net_ht
 
-    # Commissions
-    raw_dist = df["Vente"] * taux_dist
+    # =====================
+    # Calcul commissions distribution et diffusion
+    # =====================
+    # Distribution
+    raw_dist = df["Net"] * taux_dist
+    sum_raw_dist = raw_dist.sum()
+    com_distribution_total = raw_dist.sum()
+    scaled_dist = raw_dist * (com_distribution_total / sum_raw_dist)
+    cents_floor = np.floor(scaled_dist*100).astype(int)
+    remainders = (scaled_dist*100) - cents_floor
+    target_cents = int(round(com_distribution_total*100))
+    diff = target_cents - cents_floor.sum()
+    idx_sorted = np.argsort(-remainders.values)
+    adjust = np.zeros(len(df), dtype=int)
+    if diff > 0:
+        adjust[idx_sorted[:diff]] = 1
+    elif diff < 0:
+        adjust[idx_sorted[len(df)+diff:]] = -1
+    df["Commission_distribution"] = (cents_floor+adjust)/100.0
+
+    # Diffusion
     raw_diff = df["Net"] * taux_diff
-    total_com_dist = raw_dist.sum()
-    total_com_diff = raw_diff.sum()
+    sum_raw_diff = raw_diff.sum()
+    com_diffusion_total = raw_diff.sum()
+    scaled_diff = raw_diff * (com_diffusion_total / sum_raw_diff)
+    cents_floor = np.floor(scaled_diff*100).astype(int)
+    remainders = (scaled_diff*100) - cents_floor
+    target_cents = int(round(com_diffusion_total*100))
+    diff = target_cents - cents_floor.sum()
+    idx_sorted = np.argsort(-remainders.values)
+    adjust = np.zeros(len(df), dtype=int)
+    if diff > 0:
+        adjust[idx_sorted[:diff]] = 1
+    elif diff < 0:
+        adjust[idx_sorted[len(df)+diff:]] = -1
+    df["Commission_diffusion"] = (cents_floor+adjust)/100.0
 
-    # ========== Construction de l'écriture ==========
+    # =====================
+    # Construction écritures analytiques
+    # =====================
     ecritures = []
 
-    # CA HT
+    # CA brut
     ecritures.append({
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
-        "Compte": compte_ca,
-        "Libelle": f"{libelle_base} - CA HT",
+        "Compte": compte_ca_brut,
+        "Libelle": f"{libelle_base} - CA brut global",
+        "ISBN": "",
         "Débit": 0.0,
-        "Crédit": round(net_ht, 2)
+        "Crédit": df["Vente"].sum()
     })
+    for _, r in df.iterrows():
+        ecritures.append({
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_ca_brut,
+            "Libelle": f"{libelle_base} - CA brut ISBN",
+            "ISBN": r["ISBN"],
+            "Débit": 0.0,
+            "Crédit": r["Vente"]
+        })
 
-    # TVA
+    # Retours
     ecritures.append({
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
-        "Compte": compte_tva,
-        "Libelle": f"{libelle_base} - TVA collectée",
+        "Compte": compte_retour,
+        "Libelle": f"{libelle_base} - Retours global",
+        "ISBN": "",
+        "Débit": df["Retour"].sum(),
+        "Crédit": 0.0
+    })
+    for _, r in df.iterrows():
+        ecritures.append({
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_retour,
+            "Libelle": f"{libelle_base} - Retours ISBN",
+            "ISBN": r["ISBN"],
+            "Débit": r["Retour"],
+            "Crédit": 0.0
+        })
+
+    # CA net après remise
+    ecritures.append({
+        "Date": date_ecriture.strftime("%d/%m/%Y"),
+        "Journal": journal,
+        "Compte": compte_ca_net,
+        "Libelle": f"{libelle_base} - CA net global",
+        "ISBN": "",
         "Débit": 0.0,
-        "Crédit": round(tva_collectee, 2)
+        "Crédit": df["Facture"].sum()
     })
+    for _, r in df.iterrows():
+        ecritures.append({
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_ca_net,
+            "Libelle": f"{libelle_base} - CA net ISBN",
+            "ISBN": r["ISBN"],
+            "Débit": 0.0,
+            "Crédit": r["Facture"]
+        })
 
-    # Provision retours
+    # Provision retours (10% TTC sur CA brut)
+    montant_prov = df["Vente"].sum()*(1+taux_tva)*taux_provision_retour
     ecritures.append({
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
-        "Compte": compte_provision,
+        "Compte": compte_prov_retour,
         "Libelle": f"{libelle_base} - Provision retours",
+        "ISBN": "",
         "Débit": 0.0,
-        "Crédit": round(provision_retours, 2)
+        "Crédit": montant_prov
     })
 
-    # Commissions distribution
+    # Commissions distribution et diffusion
+    total_dist = df["Commission_distribution"].sum()
+    total_diff = df["Commission_diffusion"].sum()
+
     ecritures.append({
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
         "Compte": compte_com_dist,
         "Libelle": f"{libelle_base} - Commissions distribution",
-        "Débit": round(total_com_dist, 2),
+        "ISBN": "",
+        "Débit": total_dist,
         "Crédit": 0.0
     })
-
-    # Commissions diffusion
     ecritures.append({
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
         "Compte": compte_com_diff,
         "Libelle": f"{libelle_base} - Commissions diffusion",
-        "Débit": round(total_com_diff, 2),
+        "ISBN": "",
+        "Débit": total_diff,
         "Crédit": 0.0
     })
 
+    # =====================
+    # Création dataframe
+    # =====================
     df_ecr = pd.DataFrame(ecritures)
 
     # Vérification équilibre
@@ -114,20 +190,20 @@ if fichier_bldd is not None:
     if round(total_debit,2) != round(total_credit,2):
         st.error(f"⚠️ Écriture déséquilibrée : Débit={total_debit}, Crédit={total_credit}")
     else:
-        st.success("✅ Écriture équilibrée et prête à l'import comptable !")
+        st.success("✅ Écritures équilibrées !")
 
     # Export Excel
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_ecr.to_excel(writer, index=False, sheet_name="Ecriture_BLDD")
+        df_ecr.to_excel(writer, index=False, sheet_name="Ecritures")
     buffer.seek(0)
+
     st.download_button(
-        "📥 Télécharger l'écriture globale (Excel)",
+        label="📥 Télécharger les écritures (Excel)",
         data=buffer,
-        file_name="Ecriture_BLDD.xlsx",
+        file_name="Ecritures_BLDD.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # Aperçu
-    st.subheader("👀 Aperçu de l'écriture générée")
+    st.subheader("👀 Aperçu des écritures générées")
     st.dataframe(df_ecr)
