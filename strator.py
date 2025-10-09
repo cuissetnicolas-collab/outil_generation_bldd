@@ -19,10 +19,10 @@ compte_remise = "709100000"
 compte_com_dist = "622800000"
 compte_com_diff = "622800010"
 compte_tva_collectee = "445710060"
-compte_tva_com = "445660"
+compte_tva_com = "445660000"     # ✅ corrigé
 compte_provision = "681000000"
 compte_client = "411100011"
-compte_reprise = "781000000"
+compte_reprise = "467100000"     # ✅ corrigé
 
 # Saisie montants totaux commissions et reprise provision
 com_distribution_total = st.number_input("Montant total commissions distribution", value=1000.00, format="%.2f")
@@ -117,7 +117,7 @@ if fichier_entree is not None:
                 "Crédit": abs(com_diff) if com_diff<0 else 0.0
             })
         # Provision 10% TTC sur CA brut
-        ttc = r["Vente"] * 1.055  # TVA incluse
+        ttc = r["Vente"] * 1.055
         provision = round(ttc*0.10,2)
         ecritures.append({
             "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_provision,
@@ -128,7 +128,6 @@ if fichier_entree is not None:
     df_ecr = pd.DataFrame(ecritures)
     
     # ========= Lignes globales =========
-    # TVA collectée
     ca_net_total = df["Facture"].sum()
     tva_collectee = round(ca_net_total*0.055,2)
     df_ecr = pd.concat([df_ecr, pd.DataFrame([{
@@ -154,8 +153,7 @@ if fichier_entree is not None:
             "ISBN": "", "Débit": 0.0, "Crédit": provision_reprise
         }])], ignore_index=True)
     
-    # Compte client 4111
-    # Calcul global = somme de toutes les écritures analytiques au crédit - somme au débit
+    # Compte client 4111 (équilibrage automatique)
     total_credit = df_ecr["Crédit"].sum()
     total_debit = df_ecr["Débit"].sum()
     solde_client = round(total_credit - total_debit,2)
