@@ -74,78 +74,59 @@ if fichier_entree is not None:
         adjust[idx_sorted[len(df)+diff:]] = -1
     df["Commission_diffusion"] = (cents_floor + adjust)/100.0
 
-    # ========= Provision par ISBN =========
-    df["Provision_retour"] = (df["Vente"] * 0.10).round(2)
+    # ========= Provision 10% TTC =========
+    df["Provision_retour"] = (df["Vente"] * 1.055 * 0.10).round(2)  # TTC
 
     # ========= Construction écritures par ISBN =========
     ecritures = []
     for _, r in df.iterrows():
         # CA brut
         ecritures.append({
-            "Date": date_ecriture.strftime("%d/%m/%Y"),
-            "Journal": journal,
-            "Compte": compte_ca,
-            "Libelle": f"{libelle_base} - CA brut",
-            "ISBN": r["ISBN"],
-            "Débit": 0.0,
-            "Crédit": max(0,r["Vente"])
+            "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_ca,
+            "Libelle": f"{libelle_base} - CA brut", "ISBN": r["ISBN"],
+            "Débit": 0.0, "Crédit": max(0,r["Vente"])
         })
         # Retours
         ecritures.append({
-            "Date": date_ecriture.strftime("%d/%m/%Y"),
-            "Journal": journal,
-            "Compte": compte_retour,
-            "Libelle": f"{libelle_base} - Retours",
-            "ISBN": r["ISBN"],
-            "Débit": abs(r["Retour"]),
-            "Crédit": 0.0
+            "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_retour,
+            "Libelle": f"{libelle_base} - Retours", "ISBN": r["ISBN"],
+            "Débit": abs(r["Retour"]), "Crédit": 0.0
         })
         # Remises libraires
         remise = r["Net"] - r["Facture"]
         if remise != 0:
             ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"),
-                "Journal": journal,
-                "Compte": compte_remise,
-                "Libelle": f"{libelle_base} - Remises libraires",
-                "ISBN": r["ISBN"],
+                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_remise,
+                "Libelle": f"{libelle_base} - Remises libraires", "ISBN": r["ISBN"],
                 "Débit": 0.0 if remise < 0 else remise,
                 "Crédit": abs(remise) if remise < 0 else 0.0
             })
         # Commissions distribution
         com_dist = r["Commission_distribution"]
-        if com_dist != 0:
+        if com_dist !=0:
             ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"),
-                "Journal": journal,
-                "Compte": compte_com_dist,
-                "Libelle": f"{libelle_base} - Com. distribution",
-                "ISBN": r["ISBN"],
+                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_com_dist,
+                "Libelle": f"{libelle_base} - Com. distribution", "ISBN": r["ISBN"],
                 "Débit": com_dist if com_dist>0 else 0.0,
                 "Crédit": abs(com_dist) if com_dist<0 else 0.0
             })
         # Commissions diffusion
         com_diff = r["Commission_diffusion"]
-        if com_diff != 0:
+        if com_diff !=0:
             ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"),
-                "Journal": journal,
-                "Compte": compte_com_diff,
-                "Libelle": f"{libelle_base} - Com. diffusion",
-                "ISBN": r["ISBN"],
+                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_com_diff,
+                "Libelle": f"{libelle_base} - Com. diffusion", "ISBN": r["ISBN"],
                 "Débit": com_diff if com_diff>0 else 0.0,
                 "Crédit": abs(com_diff) if com_diff<0 else 0.0
             })
-        # Provision retours
-        prov = r["Provision_retour"]
-        if prov != 0:
+        # Provision retours par ISBN
+        if r["Provision_retour"] != 0:
             ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"),
-                "Journal": journal,
+                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
                 "Compte": compte_provision,
                 "Libelle": f"{libelle_base} - Provision retours",
                 "ISBN": r["ISBN"],
-                "Débit": prov,
+                "Débit": r["Provision_retour"],
                 "Crédit": 0.0
             })
 
@@ -153,9 +134,6 @@ if fichier_entree is not None:
 
     # ========= Lignes globales =========
     ca_net_total = df["Facture"].sum()
-    ca_brut_total = df["Vente"].sum()
-    retour_total = df["Retour"].sum()
-    remise_total = (df["Net"] - df["Facture"]).sum()
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
     tva_collectee = round((ca_net_total) * 0.055,2)
     tva_com = round(com_total * 0.055,2)
@@ -183,16 +161,25 @@ if fichier_entree is not None:
         "Crédit": 0.0
     }])], ignore_index=True)
 
-    # Reprise provision (ligne globale)
+    # Contrepartie globale provisions
     df_ecr = pd.concat([df_ecr, pd.DataFrame([{
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
         "Compte": compte_provision_contra,
-        "Libelle": f"{libelle_base} - Reprise provision",
+        "Libelle": f"{libelle_base} - Provision retours (contrepartie)",
         "ISBN": "",
         "Débit": 0.0,
-        "Crédit": provision_reprise
+        "Crédit": provision_total
     }])], ignore_index=True)
+
+    # Reprise provision
+    if provision_reprise > 0:
+        df_ecr = pd.concat([df_ecr, pd.DataFrame([
+            {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_provision_contra,
+             "Libelle": f"{libelle_base} - Reprise provision", "ISBN": "", "Débit": provision_reprise, "Crédit": 0.0},
+            {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_provision,
+             "Libelle": f"{libelle_base} - Reprise provision", "ISBN": "", "Débit": 0.0, "Crédit": provision_reprise}
+        ])], ignore_index=True)
 
     # Compte client global 411
     solde_client = ca_net_total - tva_collectee - com_total - tva_com - provision_total + provision_reprise
@@ -206,7 +193,7 @@ if fichier_entree is not None:
         "Crédit": 0.0
     }])], ignore_index=True)
 
-    # ========= Vérification équilibre =========
+    # Vérification équilibre
     total_debit = round(df_ecr["Débit"].sum(),2)
     total_credit = round(df_ecr["Crédit"].sum(),2)
     if total_debit != total_credit:
@@ -214,7 +201,7 @@ if fichier_entree is not None:
     else:
         st.success("✅ Écritures équilibrées !")
 
-    # ========= Export & téléchargement =========
+    # Export & téléchargement
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_ecr.to_excel(writer, index=False, sheet_name="Ecritures")
