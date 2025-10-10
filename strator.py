@@ -68,7 +68,7 @@ if fichier_entree is not None:
         if diff > 0:
             adjust[idx_sorted[:diff]] = 1
         elif diff < 0:
-            adjust[idx_sorted[len(raw) + diff:]] = -1
+            adjust[idx_sorted[len(raw) + diff :]] = -1
         return (cents_floor + adjust) / 100.0
 
     df["Commission_distribution"] = repartir_commissions(df["Vente"], com_distribution_total)
@@ -120,7 +120,7 @@ if fichier_entree is not None:
                 "Débit": com_diff if com_diff > 0 else 0.0,
                 "Crédit": abs(com_diff) if com_diff < 0 else 0.0
             })
-        # Provision retours (681) par ISBN
+        # Provision retours (681) par ISBN analytique
         provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)  # TTC 10%
         ecritures.append({
             "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
@@ -137,6 +137,7 @@ if fichier_entree is not None:
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
     tva_collectee = round(ca_net_total * 0.055, 2)
     tva_com = round(com_total * 0.055, 2)
+    provision_total = round(df["Vente"].sum() * 1.055 * 0.10, 2)
 
     # ============================
     # Lignes globales
@@ -157,22 +158,37 @@ if fichier_entree is not None:
     df_glob["ISBN"] = ""
 
     # ============================
-    # Solde final 411 pour équilibrage
+    # Solde final 411 pour équilibrage automatique
     # ============================
     df_temp = pd.concat([df_ecr, df_glob], ignore_index=True)
     total_debit = df_temp["Débit"].sum()
     total_credit = df_temp["Crédit"].sum()
     diff = round(total_debit - total_credit, 2)
 
-    ligne_411 = pd.DataFrame([{
-        "Date": date_ecriture.strftime("%d/%m/%Y"),
-        "Journal": journal,
-        "Compte": compte_client,
-        "Libelle": f"{libelle_base} - Contrepartie client",
-        "ISBN": "",
-        "Débit": diff if diff > 0 else 0.0,
-        "Crédit": -diff if diff < 0 else 0.0
-    }])
+    if diff > 0:
+        # Débit > Crédit → créditer 411
+        ligne_411 = pd.DataFrame([{
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_client,
+            "Libelle": f"{libelle_base} - Contrepartie client",
+            "ISBN": "",
+            "Débit": 0.0,
+            "Crédit": diff
+        }])
+    elif diff < 0:
+        # Crédit > Débit → débiter 411
+        ligne_411 = pd.DataFrame([{
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_client,
+            "Libelle": f"{libelle_base} - Contrepartie client",
+            "ISBN": "",
+            "Débit": -diff,
+            "Crédit": 0.0
+        }])
+    else:
+        ligne_411 = pd.DataFrame()  # déjà équilibré
 
     # ============================
     # Fusion finale
