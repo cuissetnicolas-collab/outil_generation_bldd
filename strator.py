@@ -68,7 +68,7 @@ if fichier_entree is not None:
         if diff > 0:
             adjust[idx_sorted[:diff]] = 1
         elif diff < 0:
-            adjust[idx_sorted[len(raw) + diff :]] = -1
+            adjust[idx_sorted[len(raw) + diff:]] = -1
         return (cents_floor + adjust) / 100.0
 
     df["Commission_distribution"] = repartir_commissions(df["Vente"], com_distribution_total)
@@ -134,11 +134,9 @@ if fichier_entree is not None:
     # Totaux globaux
     # ============================
     ca_net_total = df["Facture"].sum()
-    ca_brut_total = df["Vente"].sum()
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
     tva_collectee = round(ca_net_total * 0.055, 2)
     tva_com = round(com_total * 0.055, 2)
-    provision_total = round(ca_brut_total * 1.055 * 0.10, 2)
 
     # ============================
     # Lignes globales
@@ -161,10 +159,10 @@ if fichier_entree is not None:
     # ============================
     # Solde final 411 pour équilibrage
     # ============================
-    df_final_temp = pd.concat([df_ecr, df_glob], ignore_index=True)
-    total_debit = df_final_temp["Débit"].sum()
-    total_credit = df_final_temp["Crédit"].sum()
-    solde_411 = round(total_debit - total_credit, 2)
+    df_temp = pd.concat([df_ecr, df_glob], ignore_index=True)
+    total_debit = df_temp["Débit"].sum()
+    total_credit = df_temp["Crédit"].sum()
+    diff = round(total_debit - total_credit, 2)
 
     ligne_411 = pd.DataFrame([{
         "Date": date_ecriture.strftime("%d/%m/%Y"),
@@ -172,8 +170,8 @@ if fichier_entree is not None:
         "Compte": compte_client,
         "Libelle": f"{libelle_base} - Contrepartie client",
         "ISBN": "",
-        "Débit": solde_411 if solde_411 >= 0 else 0.0,
-        "Crédit": -solde_411 if solde_411 < 0 else 0.0
+        "Débit": diff if diff > 0 else 0.0,
+        "Crédit": -diff if diff < 0 else 0.0
     }])
 
     # ============================
