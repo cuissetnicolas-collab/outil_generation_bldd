@@ -29,11 +29,11 @@ compte_client = "411100011"
 # Saisie montants totaux commissions et reprise provision
 com_distribution_total = st.number_input("Montant total commissions distribution", value=1000.00, format="%.2f")
 com_diffusion_total = st.number_input("Montant total commissions diffusion", value=500.00, format="%.2f")
-provision_reprise = st.number_input("Montant de reprise de provision", value=0.0, format="%.2f")
+provision_reprise = st.number_input("Montant de reprise de provision (6 mois)", value=0.0, format="%.2f")
 
 # Taux commissions
-taux_dist = st.number_input("Taux distribution (%)", value=12.5)/100
-taux_diff = st.number_input("Taux diffusion (%)", value=9.0)/100
+taux_dist = st.number_input("Taux distribution (%)", value=12.5) / 100
+taux_diff = st.number_input("Taux diffusion (%)", value=9.0) / 100
 
 # ============================
 # Traitement
@@ -68,8 +68,8 @@ if fichier_entree is not None:
         if diff > 0:
             adjust[idx_sorted[:diff]] = 1
         elif diff < 0:
-            adjust[idx_sorted[len(raw) + diff:]] = -1
-        return (cents_floor + adjust)/100.0
+            adjust[idx_sorted[len(raw) + diff :]] = -1
+        return (cents_floor + adjust) / 100.0
 
     df["Commission_distribution"] = repartir_commissions(df["Vente"], com_distribution_total)
     df["Commission_diffusion"] = repartir_commissions(df["Net"], com_diffusion_total)
@@ -78,6 +78,7 @@ if fichier_entree is not None:
     # Construction écritures par ISBN
     # ============================
     ecritures = []
+
     for _, r in df.iterrows():
         isbn = r["ISBN"]
         # CA brut
@@ -119,14 +120,13 @@ if fichier_entree is not None:
                 "Débit": com_diff if com_diff > 0 else 0.0,
                 "Crédit": abs(com_diff) if com_diff < 0 else 0.0
             })
-        # Provision 681 analytique
-        provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)
-        if provision_isbn != 0:
-            ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-                "Compte": compte_provision, "Libelle": f"{libelle_base} - Provision retours", "ISBN": isbn,
-                "Débit": provision_isbn, "Crédit": 0.0
-            })
+        # Provision retours (681) par ISBN
+        provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)  # TTC 10%
+        ecritures.append({
+            "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
+            "Compte": compte_provision, "Libelle": f"{libelle_base} - Provision retours", "ISBN": isbn,
+            "Débit": provision_isbn, "Crédit": 0.0
+        })
 
     df_ecr = pd.DataFrame(ecritures)
 
@@ -134,10 +134,11 @@ if fichier_entree is not None:
     # Totaux globaux
     # ============================
     ca_net_total = df["Facture"].sum()
+    ca_brut_total = df["Vente"].sum()
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
-    tva_collectee = round(ca_net_total * 0.055,2)
-    tva_com = round(com_total * 0.055,2)
-    provision_total = round(df["Vente"].sum() * 1.055 * 0.10, 2)
+    tva_collectee = round(ca_net_total * 0.055, 2)
+    tva_com = round(com_total * 0.055, 2)
+    provision_total = round(ca_brut_total * 1.055 * 0.10, 2)
 
     # ============================
     # Lignes globales
@@ -149,7 +150,7 @@ if fichier_entree is not None:
         {"Compte": compte_tva_com, "Libelle": f"{libelle_base} - TVA déductible commissions", "Débit": tva_com, "Crédit": 0.0},
         # Reprise de provision (467 au débit / 411 au crédit)
         {"Compte": compte_reprise, "Libelle": f"{libelle_base} - Reprise provision", "Débit": provision_reprise, "Crédit": 0.0},
-        {"Compte": compte_client, "Libelle": f"{libelle_base} - Reprise provision (contrepartie)", "Débit": 0.0, "Crédit": provision_reprise}
+        {"Compte": compte_client, "Libelle": f"{libelle_base} - Reprise provision (contrepartie)", "Débit": 0.0, "Crédit": provision_reprise},
     ]
 
     df_glob = pd.DataFrame(lignes_globales)
@@ -158,11 +159,14 @@ if fichier_entree is not None:
     df_glob["ISBN"] = ""
 
     # ============================
-    # Calcul solde exact 411
+    # Solde final 411 pour équilibrage
     # ============================
-    total_debit = df_ecr["Débit"].sum() + df_glob["Débit"].sum()
-    total_credit = df_ecr["Crédit"].sum() + df_glob["Crédit"].sum()
-    solde_411 = round(total_debit - total_credit,2)
+    df_final_temp = pd.concat([df_ecr, df_glob], ignore_index=True)
+    total_debit = df_final_temp["Débit"].sum()
+    total_credit = df_final_temp["Crédit"].sum()
+    solde_411 = round(total_debit - total_credit, 2)
+    if solde_411 < 0:
+        solde_411 = abs(solde_411)
 
     ligne_411 = pd.DataFrame([{
         "Date": date_ecriture.strftime("%d/%m/%Y"),
@@ -179,16 +183,15 @@ if fichier_entree is not None:
     # ============================
     df_final = pd.concat([df_ecr, df_glob, ligne_411], ignore_index=True)
 
-    # Vérification équilibre
-    total_debit_final = df_final["Débit"].sum()
-    total_credit_final = df_final["Crédit"].sum()
-    if abs(total_debit_final - total_credit_final) > 0.01:
-        st.error(f"⚠️ Écritures déséquilibrées : Débit={total_debit_final}, Crédit={total_credit_final}")
+    total_debit = df_final["Débit"].sum()
+    total_credit = df_final["Crédit"].sum()
+    if abs(total_debit - total_credit) > 0.01:
+        st.error(f"⚠️ Écritures déséquilibrées : Débit={total_debit}, Crédit={total_credit}")
     else:
         st.success("✅ Écritures équilibrées !")
 
     # ============================
-    # Export
+    # Export Excel
     # ============================
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
