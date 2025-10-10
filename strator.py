@@ -120,57 +120,46 @@ if fichier_entree is not None:
                 "Débit": com_diff if com_diff > 0 else 0.0,
                 "Crédit": abs(com_diff) if com_diff < 0 else 0.0
             })
+        # Provision retours 681 par ISBN (analytique)
+        ca_ttc = r["Vente"] * 1.055
+        prov = round(ca_ttc * 0.10, 2)
+        if prov != 0:
+            ecritures.append({
+                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
+                "Compte": compte_provision, "Libelle": f"{libelle_base} - Provision retours", "ISBN": isbn,
+                "Débit": prov, "Crédit": 0.0
+            })
 
     df_ecr = pd.DataFrame(ecritures)
 
     # ============================
-    # Calcul TVA et provisions
+    # Calcul TVA et totals
     # ============================
     ca_net_total = df["Facture"].sum()
-    ca_brut_total = df["Vente"].sum()
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
     tva_collectee = round(ca_net_total * 0.055, 2)
     tva_com = round(com_total * 0.055, 2)
-    # Provision 10% sur CA brut TTC
-    provision_total = round(ca_brut_total * 1.055 * 0.10, 2)
-
-    # ============================
-    # Lignes provision par ISBN (analytique)
-    # ============================
-    for _, r in df.iterrows():
-        isbn = r["ISBN"]
-        ca_ttc = r["Vente"] * 1.055
-        prov = round(ca_ttc * 0.10, 2)
-        if prov != 0:
-            df_ecr = pd.concat([df_ecr, pd.DataFrame([{
-                "Date": date_ecriture.strftime("%d/%m/%Y"),
-                "Journal": journal,
-                "Compte": compte_provision,
-                "Libelle": f"{libelle_base} - Provision retours",
-                "ISBN": isbn,
-                "Débit": prov,
-                "Crédit": 0.0
-            }])], ignore_index=True)
+    provision_total = round(df_ecr[df_ecr["Compte"]==compte_provision]["Débit"].sum(),2)
 
     # ============================
     # Lignes globales
     # ============================
     lignes_globales = [
-        # TVA collectée
-        {"Compte": compte_tva_collectee, "Libelle": f"{libelle_base} - TVA collectée", "Débit": 0.0, "Crédit": tva_collectee, "ISBN": ""},
-        # TVA déductible sur commissions
-        {"Compte": compte_tva_com, "Libelle": f"{libelle_base} - TVA déductible commissions", "Débit": tva_com, "Crédit": 0.0, "ISBN": ""},
-        # Reprise de provision (467 au débit / 411 au crédit)
-        {"Compte": compte_reprise, "Libelle": f"{libelle_base} - Reprise provision", "Débit": provision_reprise, "Crédit": 0.0, "ISBN": ""},
-        {"Compte": compte_client, "Libelle": f"{libelle_base} - Reprise provision (contrepartie)", "Débit": 0.0, "Crédit": provision_reprise, "ISBN": ""}
+        {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_tva_collectee,
+         "Libelle": f"{libelle_base} - TVA collectée", "ISBN": "", "Débit": 0.0, "Crédit": tva_collectee},
+        {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_tva_com,
+         "Libelle": f"{libelle_base} - TVA déductible commissions", "ISBN": "", "Débit": tva_com, "Crédit": 0.0},
+        {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_reprise,
+         "Libelle": f"{libelle_base} - Reprise provision", "ISBN": "", "Débit": provision_reprise, "Crédit": 0.0},
+        {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_client,
+         "Libelle": f"{libelle_base} - Reprise provision (contrepartie)", "ISBN": "", "Débit": 0.0, "Crédit": provision_reprise},
     ]
 
-    # Calcul du solde client global (équilibrage)
+    # Solde client global pour équilibrage (tout le reste au débit)
     solde_client = ca_net_total - tva_collectee - com_total - tva_com - provision_total + provision_reprise
     lignes_globales.append({
-        "Compte": compte_client,
-        "Libelle": f"{libelle_base} - Contrepartie client",
-        "Débit": solde_client, "Crédit": 0.0, "ISBN": ""
+        "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_client,
+        "Libelle": f"{libelle_base} - Contrepartie client", "ISBN": "", "Débit": solde_client, "Crédit": 0.0
     })
 
     df_glob = pd.DataFrame(lignes_globales)
