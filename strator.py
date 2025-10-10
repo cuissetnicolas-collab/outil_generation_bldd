@@ -14,6 +14,9 @@ date_ecriture = st.date_input("📅 Date d'écriture")
 journal = st.text_input("📒 Journal", value="VT")
 libelle_base = st.text_input("📝 Libellé", value="VENTES BLDD")
 
+# ✅ Saisie famille analytique
+famille_analytique = st.text_input("🏷️ Famille analytique", value="EDITION")
+
 # Comptes utilisés
 compte_ca = "701100000"
 compte_retour = "709000000"
@@ -81,52 +84,35 @@ if fichier_entree is not None:
 
     for _, r in df.iterrows():
         isbn = r["ISBN"]
+        def add_ligne(compte, libelle, debit, credit):
+            ecritures.append({
+                "Date": date_ecriture.strftime("%d/%m/%Y"),
+                "Journal": journal,
+                "Compte": compte,
+                "Libelle": libelle,
+                "Famille analytique": famille_analytique,
+                "ISBN": isbn,
+                "Débit": round(debit, 2),
+                "Crédit": round(credit, 2)
+            })
+
         # CA brut
-        ecritures.append({
-            "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-            "Compte": compte_ca, "Libelle": f"{libelle_base} - CA brut", "ISBN": isbn,
-            "Débit": 0.0, "Crédit": max(0, r["Vente"])
-        })
+        add_ligne(compte_ca, f"{libelle_base} - CA brut", 0.0, max(0, r["Vente"]))
         # Retours
-        ecritures.append({
-            "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-            "Compte": compte_retour, "Libelle": f"{libelle_base} - Retours", "ISBN": isbn,
-            "Débit": abs(r["Retour"]), "Crédit": 0.0
-        })
+        add_ligne(compte_retour, f"{libelle_base} - Retours", abs(r["Retour"]), 0.0)
         # Remises libraires
         remise = r["Net"] - r["Facture"]
         if remise != 0:
-            ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-                "Compte": compte_remise, "Libelle": f"{libelle_base} - Remises libraires", "ISBN": isbn,
-                "Débit": 0.0 if remise < 0 else remise,
-                "Crédit": abs(remise) if remise < 0 else 0.0
-            })
+            add_ligne(compte_remise, f"{libelle_base} - Remises libraires",
+                      0.0 if remise < 0 else remise,
+                      abs(remise) if remise < 0 else 0.0)
         # Commissions distribution
-        com_dist = r["Commission_distribution"]
-        if com_dist != 0:
-            ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-                "Compte": compte_com_dist, "Libelle": f"{libelle_base} - Com. distribution", "ISBN": isbn,
-                "Débit": com_dist if com_dist > 0 else 0.0,
-                "Crédit": abs(com_dist) if com_dist < 0 else 0.0
-            })
+        add_ligne(compte_com_dist, f"{libelle_base} - Com. distribution", r["Commission_distribution"], 0.0)
         # Commissions diffusion
-        com_diff = r["Commission_diffusion"]
-        if com_diff != 0:
-            ecritures.append({
-                "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-                "Compte": compte_com_diff, "Libelle": f"{libelle_base} - Com. diffusion", "ISBN": isbn,
-                "Débit": com_diff if com_diff > 0 else 0.0,
-                "Crédit": abs(com_diff) if com_diff < 0 else 0.0
-            })
-        # Provision retours (681) par ISBN analytique
-        provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)  # TTC 10%
-        ecritures.append({
-            "Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal,
-            "Compte": compte_provision, "Libelle": f"{libelle_base} - Provision retours", "ISBN": isbn,
-            "Débit": provision_isbn, "Crédit": 0.0
-        })
+        add_ligne(compte_com_diff, f"{libelle_base} - Com. diffusion", r["Commission_diffusion"], 0.0)
+        # Provision retours (681)
+        provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)
+        add_ligne(compte_provision, f"{libelle_base} - Provision retours", provision_isbn, 0.0)
 
     df_ecr = pd.DataFrame(ecritures)
 
@@ -137,17 +123,13 @@ if fichier_entree is not None:
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
     tva_collectee = round(ca_net_total * 0.055, 2)
     tva_com = round(com_total * 0.055, 2)
-    provision_total = round(df["Vente"].sum() * 1.055 * 0.10, 2)
 
     # ============================
     # Lignes globales
     # ============================
     lignes_globales = [
-        # TVA collectée
         {"Compte": compte_tva_collectee, "Libelle": f"{libelle_base} - TVA collectée", "Débit": 0.0, "Crédit": tva_collectee},
-        # TVA déductible sur commissions
         {"Compte": compte_tva_com, "Libelle": f"{libelle_base} - TVA déductible commissions", "Débit": tva_com, "Crédit": 0.0},
-        # Reprise de provision (467 au débit / 411 au crédit)
         {"Compte": compte_reprise, "Libelle": f"{libelle_base} - Reprise provision", "Débit": provision_reprise, "Crédit": 0.0},
         {"Compte": compte_client, "Libelle": f"{libelle_base} - Reprise provision (contrepartie)", "Débit": 0.0, "Crédit": provision_reprise},
     ]
@@ -155,6 +137,7 @@ if fichier_entree is not None:
     df_glob = pd.DataFrame(lignes_globales)
     df_glob["Date"] = date_ecriture.strftime("%d/%m/%Y")
     df_glob["Journal"] = journal
+    df_glob["Famille analytique"] = famille_analytique
     df_glob["ISBN"] = ""
 
     # ============================
@@ -172,6 +155,7 @@ if fichier_entree is not None:
             "Journal": journal,
             "Compte": compte_client,
             "Libelle": f"{libelle_base} - Contrepartie client",
+            "Famille analytique": famille_analytique,
             "ISBN": "",
             "Débit": 0.0,
             "Crédit": diff
@@ -183,12 +167,13 @@ if fichier_entree is not None:
             "Journal": journal,
             "Compte": compte_client,
             "Libelle": f"{libelle_base} - Contrepartie client",
+            "Famille analytique": famille_analytique,
             "ISBN": "",
             "Débit": -diff,
             "Crédit": 0.0
         }])
     else:
-        ligne_411 = pd.DataFrame()  # déjà équilibré
+        ligne_411 = pd.DataFrame()
 
     # ============================
     # Fusion finale
