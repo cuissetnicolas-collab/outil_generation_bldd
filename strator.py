@@ -14,7 +14,7 @@ date_ecriture = st.date_input("📅 Date d'écriture")
 journal = st.text_input("📒 Journal", value="VT")
 libelle_base = st.text_input("📝 Libellé", value="VENTES BLDD")
 
-# ✅ Nouvelle saisie : famille analytique
+# Famille analytique demandée
 famille_analytique = st.text_input("🏷️ Famille analytique", value="EDITION")
 
 # Comptes utilisés
@@ -34,7 +34,7 @@ com_distribution_total = st.number_input("Montant total commissions distribution
 com_diffusion_total = st.number_input("Montant total commissions diffusion", value=500.00, format="%.2f")
 provision_reprise = st.number_input("Montant de reprise de provision (6 mois)", value=0.0, format="%.2f")
 
-# Taux commissions
+# Taux commissions (au cas où)
 taux_dist = st.number_input("Taux distribution (%)", value=12.5) / 100
 taux_diff = st.number_input("Taux diffusion (%)", value=9.0) / 100
 
@@ -44,24 +44,36 @@ taux_diff = st.number_input("Taux diffusion (%)", value=9.0) / 100
 if fichier_entree is not None:
     df = pd.read_excel(fichier_entree, header=9, dtype={"ISBN": str})
     df.columns = df.columns.str.strip()
-    df = df.dropna(subset=["ISBN"]).copy()
+    # si le fichier contient des lignes sans ISBN, on conserve mais on traite
+    df = df.copy()
 
-    df["ISBN"] = (
-        df["ISBN"].astype(str)
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
-        .str.replace("-", "", regex=False)
-        .str.replace(" ", "", regex=False)
-    )
+    # Normalisation ISBN
+    if "ISBN" in df.columns:
+        df["ISBN"] = (
+            df["ISBN"].astype(str)
+            .str.strip()
+            .str.replace(r"\.0$", "", regex=True)
+            .str.replace("-", "", regex=False)
+            .str.replace(" ", "", regex=False)
+        )
+    else:
+        st.error("La colonne 'ISBN' est absente du fichier BLDD.")
+        st.stop()
 
+    # Colonnes numériques attendues
     for c in ["Vente", "Retour", "Net", "Facture"]:
+        if c not in df.columns:
+            st.error(f"Colonne attendue manquante dans le BLDD : '{c}'")
+            st.stop()
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
 
     # ============================
-    # Calcul commissions
+    # Calcul des commissions (répartition avec centimes)
     # ============================
     def repartir_commissions(montants, total):
-        raw = montants.copy()
+        if montants.sum() == 0:
+            return pd.Series([0.0]*len(montants), index=montants.index)
+        raw = montants.astype(float).copy()
         scaled = raw * (total / raw.sum())
         cents_floor = np.floor(scaled * 100).astype(int)
         remainders = (scaled * 100) - cents_floor
@@ -72,47 +84,53 @@ if fichier_entree is not None:
             adjust[idx_sorted[:diff]] = 1
         elif diff < 0:
             adjust[idx_sorted[len(raw) + diff:]] = -1
-        return (cents_floor + adjust) / 100.0
+        return ((cents_floor + adjust) / 100.0).astype(float)
 
     df["Commission_distribution"] = repartir_commissions(df["Vente"], com_distribution_total)
     df["Commission_diffusion"] = repartir_commissions(df["Net"], com_diffusion_total)
 
     # ============================
-    # Construction écritures par ISBN
+    # Construction des écritures par ISBN (analytique)
     # ============================
     ecritures = []
 
-    def add_ligne(date, journal, compte, libelle, debit, credit, isbn, famille):
+    def add_ligne(date, journal_, compte, libelle, debit, credit, isbn, famille):
         ecritures.append({
             "Date": date.strftime("%d/%m/%Y"),
-            "Journal": journal,
+            "Journal": journal_,
             "Compte": compte,
             "Libelle": libelle,
-            "ISBN": isbn if isbn else "GLOBAL",
-            "Famille analytique": famille,
-            "Débit": round(debit, 2),
-            "Crédit": round(credit, 2)
+            "ISBN": isbn if (pd.notna(isbn) and str(isbn).strip() != "") else "GLOBAL",
+            "Famille analytique": famille if famille else "EDITION",
+            "Débit": round(float(debit), 2),
+            "Crédit": round(float(credit), 2)
         })
 
     for _, r in df.iterrows():
         isbn = r["ISBN"]
-
-        # CA brut TTC
+        # CA brut
         add_ligne(date_ecriture, journal, compte_ca, f"{libelle_base} - CA brut", 0.0, max(0, r["Vente"]), isbn, famille_analytique)
-        # Retours
+        # Retours (positif au débit)
         add_ligne(date_ecriture, journal, compte_retour, f"{libelle_base} - Retours", abs(r["Retour"]), 0.0, isbn, famille_analytique)
-        # Remises libraires
+        # Remises libraires (Net - Facture)
         remise = r["Net"] - r["Facture"]
         if remise != 0:
-            add_ligne(date_ecriture, journal, compte_remise, f"{libelle_base} - Remises libraires",
-                      0.0 if remise < 0 else remise,
-                      abs(remise) if remise < 0 else 0.0, isbn, famille_analytique)
-        # Commissions
-        add_ligne(date_ecriture, journal, compte_com_dist, f"{libelle_base} - Com. distribution", r["Commission_distribution"], 0.0, isbn, famille_analytique)
-        add_ligne(date_ecriture, journal, compte_com_diff, f"{libelle_base} - Com. diffusion", r["Commission_diffusion"], 0.0, isbn, famille_analytique)
-        # Provision retours (681)
-        provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)
-        add_ligne(date_ecriture, journal, compte_provision, f"{libelle_base} - Provision retours", provision_isbn, 0.0, isbn, famille_analytique)
+            # remises peuvent être crédit ou débit selon signe
+            if remise < 0:
+                # montant négatif → crédit
+                add_ligne(date_ecriture, journal, compte_remise, f"{libelle_base} - Remises libraires", 0.0, abs(remise), isbn, famille_analytique)
+            else:
+                add_ligne(date_ecriture, journal, compte_remise, f"{libelle_base} - Remises libraires", remise, 0.0, isbn, famille_analytique)
+        # Commissions distribution (débit : charge)
+        if r["Commission_distribution"] != 0:
+            add_ligne(date_ecriture, journal, compte_com_dist, f"{libelle_base} - Com. distribution", r["Commission_distribution"], 0.0, isbn, famille_analytique)
+        # Commissions diffusion (débit : charge)
+        if r["Commission_diffusion"] != 0:
+            add_ligne(date_ecriture, journal, compte_com_diff, f"{libelle_base} - Com. diffusion", r["Commission_diffusion"], 0.0, isbn, famille_analytique)
+        # Provision retours 681 (par ISBN, analytique)
+        provision_isbn = round(r["Vente"] * 1.055 * 0.10, 2)  # 10% TTC
+        if provision_isbn != 0:
+            add_ligne(date_ecriture, journal, compte_provision, f"{libelle_base} - Provision retours", provision_isbn, 0.0, isbn, famille_analytique)
 
     df_ecr = pd.DataFrame(ecritures)
 
@@ -123,9 +141,10 @@ if fichier_entree is not None:
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
     tva_collectee = round(ca_net_total * 0.055, 2)
     tva_com = round(com_total * 0.055, 2)
+    provision_total = round(df["Vente"].sum() * 1.055 * 0.10, 2)
 
     # ============================
-    # Lignes globales
+    # Lignes globales (sans analytique ISBN -> catégorie = GLOBAL)
     # ============================
     lignes_globales = [
         {"Compte": compte_tva_collectee, "Libelle": f"{libelle_base} - TVA collectée", "Débit": 0.0, "Crédit": tva_collectee},
@@ -139,17 +158,25 @@ if fichier_entree is not None:
     df_glob["Journal"] = journal
     df_glob["ISBN"] = "GLOBAL"
     df_glob["Famille analytique"] = famille_analytique
+    df_glob["Débit"] = df_glob["Débit"].astype(float)
+    df_glob["Crédit"] = df_glob["Crédit"].astype(float)
 
     # ============================
-    # Solde final 411 (équilibrage)
+    # Affichage des totaux avant 411 (debug)
     # ============================
     df_temp = pd.concat([df_ecr, df_glob], ignore_index=True)
     total_debit = df_temp["Débit"].sum()
     total_credit = df_temp["Crédit"].sum()
-    diff = round(total_debit - total_credit, 2)
+    st.write("Totaux avant ajout 411 :", {"Débit": total_debit, "Crédit": total_credit})
 
-    if diff > 0:
-        # Crédit à compenser → 411 au débit
+    # ============================
+    # Solde final 411 (équilibrage correct)
+    # ============================
+    # balance = crédits - débits
+    balance = round(total_credit - total_debit, 2)
+
+    if balance > 0:
+        # crédits > débits => il faut ajouter un DEBIT pour équilibrer (411 au débit)
         ligne_411 = pd.DataFrame([{
             "Date": date_ecriture.strftime("%d/%m/%Y"),
             "Journal": journal,
@@ -157,10 +184,11 @@ if fichier_entree is not None:
             "Libelle": f"{libelle_base} - Solde client (équilibrage)",
             "ISBN": "GLOBAL",
             "Famille analytique": famille_analytique,
-            "Débit": diff, "Crédit": 0.0
+            "Débit": balance,
+            "Crédit": 0.0
         }])
-    elif diff < 0:
-        # Débit à compenser → 411 au crédit
+    elif balance < 0:
+        # débits > crédits => il faut ajouter un CREDIT pour équilibrer (411 au crédit)
         ligne_411 = pd.DataFrame([{
             "Date": date_ecriture.strftime("%d/%m/%Y"),
             "Journal": journal,
@@ -168,18 +196,24 @@ if fichier_entree is not None:
             "Libelle": f"{libelle_base} - Solde client (équilibrage)",
             "ISBN": "GLOBAL",
             "Famille analytique": famille_analytique,
-            "Débit": 0.0, "Crédit": -diff
+            "Débit": 0.0,
+            "Crédit": -balance
         }])
     else:
         ligne_411 = pd.DataFrame()
 
+    # ============================
     # Fusion finale
+    # ============================
     df_final = pd.concat([df_ecr, df_glob, ligne_411], ignore_index=True)
 
-    total_debit = df_final["Débit"].sum()
-    total_credit = df_final["Crédit"].sum()
-    if abs(total_debit - total_credit) > 0.01:
-        st.error(f"⚠️ Écritures déséquilibrées : Débit={total_debit}, Crédit={total_credit}")
+    # Totaux finaux (vérif)
+    total_debit_final = df_final["Débit"].sum()
+    total_credit_final = df_final["Crédit"].sum()
+    st.write("Totaux après ajout 411 :", {"Débit": total_debit_final, "Crédit": total_credit_final})
+
+    if abs(total_debit_final - total_credit_final) > 0.01:
+        st.error(f"⚠️ Écritures déséquilibrées : Débit={total_debit_final}, Crédit={total_credit_final}")
     else:
         st.success("✅ Écritures équilibrées !")
 
