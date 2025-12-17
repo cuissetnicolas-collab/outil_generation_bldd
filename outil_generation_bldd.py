@@ -56,7 +56,7 @@ journal = st.text_input("📒 Journal", value="VT")
 libelle_base = st.text_input("📝 Libellé", value="VENTES BLDD")
 famille_analytique = st.text_input("🏷️ Famille analytique", value="EDITION")
 
-# Comptes utilisés
+# Comptes
 compte_ca = "701100000"
 compte_retour = "709000000"
 compte_remise = "709100000"
@@ -75,9 +75,6 @@ com_diffusion_total = st.number_input(
     "Montant total commissions diffusion", value=500.00, format="%.2f"
 )
 
-taux_dist = st.number_input("Taux distribution (%)", value=12.5) / 100
-taux_diff = st.number_input("Taux diffusion (%)", value=9.0) / 100
-
 # ============================
 # Traitement
 # ============================
@@ -88,7 +85,6 @@ if fichier_entree is not None:
 
     df["ISBN"] = (
         df["ISBN"].astype(str)
-        .str.strip()
         .str.replace(r"\.0$", "", regex=True)
         .str.replace("-", "", regex=False)
         .str.replace(" ", "", regex=False)
@@ -113,12 +109,8 @@ if fichier_entree is not None:
             adjust[idx_sorted[len(raw) + diff:]] = -1
         return (cents_floor + adjust) / 100.0
 
-    df["Commission_distribution"] = repartir_commissions(
-        df["Vente"], com_distribution_total
-    )
-    df["Commission_diffusion"] = repartir_commissions(
-        df["Net"], com_diffusion_total
-    )
+    df["Commission_distribution"] = repartir_commissions(df["Vente"], com_distribution_total)
+    df["Commission_diffusion"] = repartir_commissions(df["Net"], com_diffusion_total)
 
     ecritures = []
 
@@ -137,7 +129,7 @@ if fichier_entree is not None:
                 "Crédit": round(credit, 2)
             })
 
-        # ✅ CORRECTION : prise en compte des ventes négatives
+        # 🔹 CA brut (gère ventes négatives)
         add_ligne(
             date_ecriture,
             compte_ca,
@@ -146,6 +138,7 @@ if fichier_entree is not None:
             r["Vente"] if r["Vente"] > 0 else 0.0
         )
 
+        # 🔹 Retours
         add_ligne(
             date_ecriture,
             compte_retour,
@@ -154,16 +147,18 @@ if fichier_entree is not None:
             0.0
         )
 
+        # 🔹 Remises
         remise = r["Net"] - r["Facture"]
         if remise != 0:
             add_ligne(
                 date_ecriture,
                 compte_remise,
                 f"{libelle_base} - Remises libraires",
-                remise if remise > 0 else 0.0,
+                abs(remise) if remise > 0 else 0.0,
                 abs(remise) if remise < 0 else 0.0
             )
 
+        # 🔹 Commissions
         add_ligne(
             date_ecriture,
             compte_com_dist,
@@ -171,7 +166,6 @@ if fichier_entree is not None:
             r["Commission_distribution"],
             0.0
         )
-
         add_ligne(
             date_ecriture,
             compte_com_diff,
@@ -180,57 +174,65 @@ if fichier_entree is not None:
             0.0
         )
 
+        # 🔹 Provision (positive ou négative)
         provision = round(r["Vente"] * 1.055 * 0.10, 2)
+
         add_ligne(
             date_ecriture,
             compte_provision,
             f"{libelle_base} - Provision retours",
-            provision,
-            0.0
+            abs(provision) if provision > 0 else 0.0,
+            abs(provision) if provision < 0 else 0.0
         )
 
-        if provision > 0:
-            reprise_date = pd.to_datetime(date_ecriture) + MonthEnd(6)
-            add_ligne(
-                reprise_date,
-                compte_reprise,
-                f"{libelle_base} - Reprise provision",
-                0.0,
-                provision
-            )
+        # 🔹 Reprise systématique à 6 mois (miroir exact)
+        reprise_date = pd.to_datetime(date_ecriture) + MonthEnd(6)
+        add_ligne(
+            reprise_date,
+            compte_reprise,
+            f"{libelle_base} - Reprise provision",
+            abs(provision) if provision < 0 else 0.0,
+            abs(provision) if provision > 0 else 0.0
+        )
 
     df_ecr = pd.DataFrame(ecritures)
 
+    # ============================
+    # TVA & CONTREPARTIE CLIENT
+    # ============================
     ca_net_total = df["Facture"].sum()
     com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
+
     tva_collectee = round(ca_net_total * 0.055, 2)
     tva_com = round(com_total * 0.055, 2)
 
-    lignes_globales = [
-        {
-            "Date": date_ecriture.strftime("%d/%m/%Y"),
-            "Journal": journal,
-            "Compte": compte_tva_collectee,
-            "Libelle": f"{libelle_base} - TVA collectée",
-            "Famille analytique": famille_analytique,
-            "ISBN": "",
-            "Débit": 0.0,
-            "Crédit": tva_collectee
-        },
-        {
-            "Date": date_ecriture.strftime("%d/%m/%Y"),
-            "Journal": journal,
-            "Compte": compte_tva_com,
-            "Libelle": f"{libelle_base} - TVA déductible commissions",
-            "Famille analytique": famille_analytique,
-            "ISBN": "",
-            "Débit": tva_com,
-            "Crédit": 0.0
-        }
-    ]
+    df_ecr = pd.concat([
+        df_ecr,
+        pd.DataFrame([
+            {
+                "Date": date_ecriture.strftime("%d/%m/%Y"),
+                "Journal": journal,
+                "Compte": compte_tva_collectee,
+                "Libelle": f"{libelle_base} - TVA collectée",
+                "Famille analytique": famille_analytique,
+                "ISBN": "",
+                "Débit": 0.0,
+                "Crédit": tva_collectee
+            },
+            {
+                "Date": date_ecriture.strftime("%d/%m/%Y"),
+                "Journal": journal,
+                "Compte": compte_tva_com,
+                "Libelle": f"{libelle_base} - TVA déductible commissions",
+                "Famille analytique": famille_analytique,
+                "ISBN": "",
+                "Débit": tva_com,
+                "Crédit": 0.0
+            }
+        ])
+    ], ignore_index=True)
 
-    df_ecr = pd.concat([df_ecr, pd.DataFrame(lignes_globales)], ignore_index=True)
-
+    # 🔹 411 mois
     df_mois = df_ecr[df_ecr["Date"] == date_ecriture.strftime("%d/%m/%Y")]
     diff_mois = round(df_mois["Débit"].sum() - df_mois["Crédit"].sum(), 2)
 
@@ -245,12 +247,13 @@ if fichier_entree is not None:
         "Crédit": diff_mois if diff_mois > 0 else 0.0
     }
 
-    date_reprise = (pd.to_datetime(date_ecriture) + MonthEnd(6)).strftime("%d/%m/%Y")
-    df_reprise = df_ecr[df_ecr["Date"] == date_reprise]
+    # 🔹 411 reprise
+    date_reprise_str = reprise_date.strftime("%d/%m/%Y")
+    df_reprise = df_ecr[df_ecr["Date"] == date_reprise_str]
     diff_reprise = round(df_reprise["Débit"].sum() - df_reprise["Crédit"].sum(), 2)
 
     ligne_411_reprise = {
-        "Date": date_reprise,
+        "Date": date_reprise_str,
         "Journal": journal,
         "Compte": compte_client,
         "Libelle": f"{libelle_base} - Contrepartie client (reprise)",
@@ -265,17 +268,15 @@ if fichier_entree is not None:
         ignore_index=True
     )
 
-    total_debit = df_final["Débit"].sum()
-    total_credit = df_final["Crédit"].sum()
-    ecart = round(total_debit - total_credit, 2)
+    # ============================
+    # CONTRÔLE & EXPORT
+    # ============================
+    ecart = round(df_final["Débit"].sum() - df_final["Crédit"].sum(), 2)
 
     if ecart == 0:
         st.success("✅ Écritures équilibrées !")
     else:
-        st.error(
-            f"⚠️ Écart global : {ecart} € "
-            f"(Débit={total_debit}, Crédit={total_credit})"
-        )
+        st.error(f"⚠️ Écart global : {ecart} €")
 
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -283,10 +284,10 @@ if fichier_entree is not None:
     buffer.seek(0)
 
     st.download_button(
-        label="📥 Télécharger les écritures (Excel)",
-        data=buffer,
-        file_name="Ecritures_BLDD.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "📥 Télécharger les écritures (Excel)",
+        buffer,
+        "Ecritures_BLDD.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
     st.subheader("👀 Aperçu des écritures générées")
