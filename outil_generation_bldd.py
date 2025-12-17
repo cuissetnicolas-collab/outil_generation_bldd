@@ -56,7 +56,7 @@ journal = st.text_input("📒 Journal", value="VT")
 libelle_base = st.text_input("📝 Libellé", value="VENTES BLDD")
 famille_analytique = st.text_input("🏷️ Famille analytique", value="EDITION")
 
-# Comptes
+# Comptes utilisés
 compte_ca = "701100000"
 compte_retour = "709000000"
 compte_remise = "709100000"
@@ -68,127 +68,226 @@ compte_provision = "681000000"
 compte_reprise = "781000000"
 compte_client = "411100011"
 
-com_distribution_total = st.number_input("Montant total commissions distribution", 1000.00, format="%.2f")
-com_diffusion_total = st.number_input("Montant total commissions diffusion", 500.00, format="%.2f")
+com_distribution_total = st.number_input(
+    "Montant total commissions distribution", value=1000.00, format="%.2f"
+)
+com_diffusion_total = st.number_input(
+    "Montant total commissions diffusion", value=500.00, format="%.2f"
+)
 
-# ============================
-# Fonctions utilitaires
-# ============================
-def repartir_commissions(montants, total):
-    montants = montants.clip(lower=0)
-    if montants.sum() == 0:
-        return np.zeros(len(montants))
-    scaled = montants * (total / montants.sum())
-    cents = np.floor(scaled * 100).astype(int)
-    diff = int(round(total * 100)) - cents.sum()
-    if diff != 0:
-        idx = (scaled * 100 - cents).sort_values(ascending=False).index[:abs(diff)]
-        cents.loc[idx] += np.sign(diff)
-    return cents / 100
-
-def add_ligne_signe(ecritures, date, compte, libelle, montant, isbn):
-    ecritures.append({
-        "Date": date.strftime("%d/%m/%Y"),
-        "Journal": journal,
-        "Compte": compte,
-        "Libelle": libelle,
-        "Famille analytique": famille_analytique,
-        "ISBN": isbn,
-        "Débit": abs(montant) if montant < 0 else 0.0,
-        "Crédit": montant if montant > 0 else 0.0
-    })
+taux_dist = st.number_input("Taux distribution (%)", value=12.5) / 100
+taux_diff = st.number_input("Taux diffusion (%)", value=9.0) / 100
 
 # ============================
 # Traitement
 # ============================
-if fichier_entree:
-
+if fichier_entree is not None:
     df = pd.read_excel(fichier_entree, header=9, dtype={"ISBN": str})
     df.columns = df.columns.str.strip()
     df = df.dropna(subset=["ISBN"]).copy()
 
+    df["ISBN"] = (
+        df["ISBN"].astype(str)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+        .str.replace("-", "", regex=False)
+        .str.replace(" ", "", regex=False)
+    )
+
     for c in ["Vente", "Retour", "Net", "Facture"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
 
-    df["Commission_distribution"] = repartir_commissions(df["Vente"], com_distribution_total)
-    df["Commission_diffusion"] = repartir_commissions(df["Net"], com_diffusion_total)
+    def repartir_commissions(montants, total):
+        if montants.sum() == 0:
+            return np.zeros(len(montants))
+        raw = montants.copy()
+        scaled = raw * (total / raw.sum())
+        cents_floor = np.floor(scaled * 100).astype(int)
+        remainders = (scaled * 100) - cents_floor
+        diff = int(round(total * 100)) - cents_floor.sum()
+        idx_sorted = np.argsort(-remainders.values)
+        adjust = np.zeros(len(raw), dtype=int)
+        if diff > 0:
+            adjust[idx_sorted[:diff]] = 1
+        elif diff < 0:
+            adjust[idx_sorted[len(raw) + diff:]] = -1
+        return (cents_floor + adjust) / 100.0
+
+    df["Commission_distribution"] = repartir_commissions(
+        df["Vente"], com_distribution_total
+    )
+    df["Commission_diffusion"] = repartir_commissions(
+        df["Net"], com_diffusion_total
+    )
 
     ecritures = []
 
     for _, r in df.iterrows():
         isbn = r["ISBN"]
 
-        # CA brut (sens automatique)
-        add_ligne_signe(ecritures, date_ecriture, compte_ca,
-                        f"{libelle_base} - CA brut", r["Vente"], isbn)
+        def add_ligne(date, compte, libelle, debit, credit):
+            ecritures.append({
+                "Date": date.strftime("%d/%m/%Y"),
+                "Journal": journal,
+                "Compte": compte,
+                "Libelle": libelle,
+                "Famille analytique": famille_analytique,
+                "ISBN": isbn,
+                "Débit": round(debit, 2),
+                "Crédit": round(credit, 2)
+            })
 
-        # Retours
-        if r["Retour"] != 0:
-            add_ligne_signe(ecritures, date_ecriture, compte_retour,
-                            f"{libelle_base} - Retours", -abs(r["Retour"]), isbn)
+        # ✅ CORRECTION : prise en compte des ventes négatives
+        add_ligne(
+            date_ecriture,
+            compte_ca,
+            f"{libelle_base} - CA brut",
+            abs(r["Vente"]) if r["Vente"] < 0 else 0.0,
+            r["Vente"] if r["Vente"] > 0 else 0.0
+        )
 
-        # Remises
+        add_ligne(
+            date_ecriture,
+            compte_retour,
+            f"{libelle_base} - Retours",
+            abs(r["Retour"]),
+            0.0
+        )
+
         remise = r["Net"] - r["Facture"]
         if remise != 0:
-            add_ligne_signe(ecritures, date_ecriture, compte_remise,
-                            f"{libelle_base} - Remises libraires", -remise, isbn)
+            add_ligne(
+                date_ecriture,
+                compte_remise,
+                f"{libelle_base} - Remises libraires",
+                remise if remise > 0 else 0.0,
+                abs(remise) if remise < 0 else 0.0
+            )
 
-        # Commissions
-        if r["Commission_distribution"] != 0:
-            add_ligne_signe(ecritures, date_ecriture, compte_com_dist,
-                            f"{libelle_base} - Com. distribution", -r["Commission_distribution"], isbn)
+        add_ligne(
+            date_ecriture,
+            compte_com_dist,
+            f"{libelle_base} - Com. distribution",
+            r["Commission_distribution"],
+            0.0
+        )
 
-        if r["Commission_diffusion"] != 0:
-            add_ligne_signe(ecritures, date_ecriture, compte_com_diff,
-                            f"{libelle_base} - Com. diffusion", -r["Commission_diffusion"], isbn)
+        add_ligne(
+            date_ecriture,
+            compte_com_diff,
+            f"{libelle_base} - Com. diffusion",
+            r["Commission_diffusion"],
+            0.0
+        )
 
-        # Provision retours
-        provision = round(abs(r["Vente"]) * 1.055 * 0.10, 2)
+        provision = round(r["Vente"] * 1.055 * 0.10, 2)
+        add_ligne(
+            date_ecriture,
+            compte_provision,
+            f"{libelle_base} - Provision retours",
+            provision,
+            0.0
+        )
+
         if provision > 0:
-            sens = 1 if r["Vente"] > 0 else -1
-            add_ligne_signe(ecritures, date_ecriture, compte_provision,
-                            f"{libelle_base} - Provision retours", provision * sens, isbn)
-
             reprise_date = pd.to_datetime(date_ecriture) + MonthEnd(6)
-            add_ligne_signe(ecritures, reprise_date, compte_reprise,
-                            f"{libelle_base} - Reprise provision", -provision * sens, isbn)
+            add_ligne(
+                reprise_date,
+                compte_reprise,
+                f"{libelle_base} - Reprise provision",
+                0.0,
+                provision
+            )
 
     df_ecr = pd.DataFrame(ecritures)
 
-    # TVA
-    tva_collectee = round(df["Facture"].sum() * 0.055, 2)
-    tva_com = round((df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()) * 0.055, 2)
+    ca_net_total = df["Facture"].sum()
+    com_total = df["Commission_distribution"].sum() + df["Commission_diffusion"].sum()
+    tva_collectee = round(ca_net_total * 0.055, 2)
+    tva_com = round(com_total * 0.055, 2)
 
-    df_ecr = pd.concat([df_ecr, pd.DataFrame([
-        {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_tva_collectee,
-         "Libelle": f"{libelle_base} - TVA collectée", "Famille analytique": famille_analytique,
-         "ISBN": "", "Débit": 0.0, "Crédit": tva_collectee},
-        {"Date": date_ecriture.strftime("%d/%m/%Y"), "Journal": journal, "Compte": compte_tva_com,
-         "Libelle": f"{libelle_base} - TVA déductible commissions", "Famille analytique": famille_analytique,
-         "ISBN": "", "Débit": tva_com, "Crédit": 0.0}
-    ])], ignore_index=True)
+    lignes_globales = [
+        {
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_tva_collectee,
+            "Libelle": f"{libelle_base} - TVA collectée",
+            "Famille analytique": famille_analytique,
+            "ISBN": "",
+            "Débit": 0.0,
+            "Crédit": tva_collectee
+        },
+        {
+            "Date": date_ecriture.strftime("%d/%m/%Y"),
+            "Journal": journal,
+            "Compte": compte_tva_com,
+            "Libelle": f"{libelle_base} - TVA déductible commissions",
+            "Famille analytique": famille_analytique,
+            "ISBN": "",
+            "Débit": tva_com,
+            "Crédit": 0.0
+        }
+    ]
 
-    # Contrepartie client
-    diff = round(df_ecr["Débit"].sum() - df_ecr["Crédit"].sum(), 2)
-    df_ecr = pd.concat([df_ecr, pd.DataFrame([{
+    df_ecr = pd.concat([df_ecr, pd.DataFrame(lignes_globales)], ignore_index=True)
+
+    df_mois = df_ecr[df_ecr["Date"] == date_ecriture.strftime("%d/%m/%Y")]
+    diff_mois = round(df_mois["Débit"].sum() - df_mois["Crédit"].sum(), 2)
+
+    ligne_411_mois = {
         "Date": date_ecriture.strftime("%d/%m/%Y"),
         "Journal": journal,
         "Compte": compte_client,
-        "Libelle": f"{libelle_base} - Contrepartie client",
+        "Libelle": f"{libelle_base} - Contrepartie client (mois)",
         "Famille analytique": famille_analytique,
         "ISBN": "",
-        "Débit": abs(diff) if diff < 0 else 0.0,
-        "Crédit": diff if diff > 0 else 0.0
-    }])], ignore_index=True)
+        "Débit": 0.0 if diff_mois > 0 else abs(diff_mois),
+        "Crédit": diff_mois if diff_mois > 0 else 0.0
+    }
 
-    # Vérification
-    ecart = round(df_ecr["Débit"].sum() - df_ecr["Crédit"].sum(), 2)
-    st.success("✅ Écritures équilibrées") if ecart == 0 else st.error(f"⚠️ Écart : {ecart}")
+    date_reprise = (pd.to_datetime(date_ecriture) + MonthEnd(6)).strftime("%d/%m/%Y")
+    df_reprise = df_ecr[df_ecr["Date"] == date_reprise]
+    diff_reprise = round(df_reprise["Débit"].sum() - df_reprise["Crédit"].sum(), 2)
+
+    ligne_411_reprise = {
+        "Date": date_reprise,
+        "Journal": journal,
+        "Compte": compte_client,
+        "Libelle": f"{libelle_base} - Contrepartie client (reprise)",
+        "Famille analytique": famille_analytique,
+        "ISBN": "",
+        "Débit": 0.0 if diff_reprise > 0 else abs(diff_reprise),
+        "Crédit": diff_reprise if diff_reprise > 0 else 0.0
+    }
+
+    df_final = pd.concat(
+        [df_ecr, pd.DataFrame([ligne_411_mois, ligne_411_reprise])],
+        ignore_index=True
+    )
+
+    total_debit = df_final["Débit"].sum()
+    total_credit = df_final["Crédit"].sum()
+    ecart = round(total_debit - total_credit, 2)
+
+    if ecart == 0:
+        st.success("✅ Écritures équilibrées !")
+    else:
+        st.error(
+            f"⚠️ Écart global : {ecart} € "
+            f"(Débit={total_debit}, Crédit={total_credit})"
+        )
 
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_ecr.to_excel(writer, index=False, sheet_name="Ecritures")
+        df_final.to_excel(writer, index=False, sheet_name="Ecritures")
     buffer.seek(0)
 
-    st.download_button("📥 Télécharger les écritures", buffer, "Ecritures_BLDD.xlsx")
-    st.dataframe(df_ecr)
+    st.download_button(
+        label="📥 Télécharger les écritures (Excel)",
+        data=buffer,
+        file_name="Ecritures_BLDD.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    st.subheader("👀 Aperçu des écritures générées")
+    st.dataframe(df_final)
